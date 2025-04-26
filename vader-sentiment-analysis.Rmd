@@ -1,0 +1,180 @@
+---
+title: "vader"
+output: html_document
+date: "2025-04-17"
+---
+
+```{r}
+library(officer)
+library(syuzhet)
+library(tidytext)
+library(dplyr)
+library(vader)
+library(readr)
+library(jsonlite)
+library(stringr)
+```
+
+```{r}
+get_vader(":) ")
+```
+
+# helper functions
+```{r}
+sentence_resegmentation<-function(jsonfilepath){
+  worddata <- fromJSON(jsonfilepath)
+  worddata<-worddata$segments$words
+  worddatalist <- NULL
+  for (s in 1:length(worddata)){
+    worddatalist <- rbind(worddatalist,worddata[[s]])
+    }
+  
+  sentence_break <- grepl("\\.", worddatalist$word) #find all periods in the text
+  startt <- worddatalist$start
+  endt <- worddatalist$end
+  ending <- which(sentence_break)
+      
+  new_sentences <- list()
+  new_timestamps_start <- list()
+  new_timestamps_end <- list()
+  start <- 1
+  for (i in seq_along(ending)) { #loop through all periods
+    end <- ending[i]
+    chunk <- worddatalist$word[start:end]
+        
+      if (length(chunk) < 5 && length(new_sentences) > 0) {        # Combine with previous sentence if too short
+        
+        new_sentences[length(new_sentences)] <- paste0(c(new_sentences[length(new_sentences)], paste0(chunk,collapse="")),collapse="")
+        #print(new_sentences[length(new_sentences)])
+        
+        } else {
+          new_sentences[length(new_sentences) + 1] <- paste0(chunk,collapse="")
+          new_timestamps_start[length(new_sentences)] <- startt[start]
+          new_timestamps_end[length(new_sentences)] <- endt[end]
+        }
+        
+        start <- end + 1 #counter of where the previous break was
+  }
+    
+    # # If any trailing words after last period
+    # if (start <= length(worddatalist$word)) {
+    #   chunk <- worddatalist$word[start:length(worddatalist$word)]
+    #   
+    #   if (length(chunk) < 5 && length(new_sentences) > 0) {
+    #     new_sentences[[length(new_sentences)]] <- c(new_sentences[[length(new_sentences)]], chunk)
+    #   } else {
+    #     new_sentences[[length(new_sentences) + 1]] <- chunk
+    #   }
+    # }
+  worddata_reformat <- cbind(unlist(new_timestamps_start),unlist(new_timestamps_end),unlist(new_sentences))
+
+  worddata_reformat <- as.data.frame(worddata_reformat)
+  names(worddata_reformat) <- c("start","end","text")
+  return(worddata_reformat)
+}
+```
+
+```{r}
+# Define batch processing function
+process_doc_folder <- function(folder_path) {
+  # Get all .tsv or .tsv-like files in the folder
+  files <- list.files(
+    path = folder_path, 
+    pattern = "\\.tsv$",  # Match .tsv files
+    full.names = TRUE
+  )
+  
+  # Create an empty data frame to store all results
+  all_results <- data.frame()
+  summary_results <- data.frame()
+  # Process each file
+  for(file in files) {
+    # Get file name without path
+    
+    # Read the document file
+    doc <- read_tsv(file) %>% filter(!is.na(text))
+    text_content <- doc$text  # Use text_content instead of text
+    
+    # Sentence splitting
+    sentences <- data.frame(
+      text=text_content
+      # text = unlist(strsplit(paste(text_content, collapse = " "), "[.!?]+"))
+    ) %>%
+      mutate(text = trimws(text)) %>%  # Trim whitespace
+      filter(text != "NA")  # Remove empty lines
+    
+    # Sentiment analysis
+    syuzhet_sentiment_scores <- get_sentiment(sentences$text, method = "syuzhet")
+    
+    vader_sentiment_scores <- sentences$text %>% sapply(get_vader) %>% t() %>% 
+      as.data.frame() %>% 
+      mutate_at(vars(compound:but_count),~as.numeric(.x))
+    rownames(vader_sentiment_scores) <- 1:nrow(vader_sentiment_scores)
+      
+    # Create result data frame
+    results <- data.frame(
+      file_name = basename(file),
+      start_time = doc$start,
+      end_time = doc$end,
+      sentence = sentences$text,
+      syuzhet_sentiment_score = syuzhet_sentiment_scores,
+      vader_sentiment_scores
+    )
+    
+    # Compute document-level statistics
+    doc_stats <- data.frame(
+      document_name = basename(file),
+      sentence_count = nrow(results),
+      mean_syuzhet_sentiment = mean(syuzhet_sentiment_scores),
+      min_syuzhet_sentiment = min(syuzhet_sentiment_scores),
+      max_syuzhet_sentiment = max(syuzhet_sentiment_scores),
+      mean_vader_sentiment = mean(vader_sentiment_scores$compound),
+      min_vader_sentiment = min(vader_sentiment_scores$compound),
+      max_vader_sentiment = max(vader_sentiment_scores$compound)
+    )
+    
+    all_results <- rbind(all_results,results)
+    summary_results <- rbind(summary_results,doc_stats)
+    # # Create output file name without .docx extension
+    # base_name <- tools::file_path_sans_ext(basename(file))
+    # 
+    # # Save detailed results
+    # write.csv(results, 
+    #           file.path(folder_path, paste0(base_name, "_sentiment_analysis.csv")), 
+    #           row.names = FALSE)
+    # 
+    # # Save statistical summary
+    # write.csv(doc_stats, 
+    #           file.path(folder_path, paste0(base_name, "_summary.csv")), 
+    #           row.names = FALSE)
+  }
+  return(list(summary = summary_results, result = all_results))
+}
+```
+
+
+# after running the whisper script, resegment the sentences
+```{r}
+files <- list.files(
+    path = folder_path, 
+    pattern = "\\.json$",  # Match .tsv files
+    full.names = TRUE
+)
+
+  # Process each file
+for(file in files) {
+  worddata <- sentence_resegmentation(file)
+  write_tsv(worddata,str_replace_all(file,"json","tsv"))
+}
+
+
+```
+
+# sentiment analysis
+```{r}
+folder_path <- "./transcription/"
+output<-process_doc_folder(folder_path)
+View(output$summary)
+View(output$result)
+mean(output$summary$mean_syuzhet_sentiment)
+```
