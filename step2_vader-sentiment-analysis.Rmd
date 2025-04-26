@@ -177,4 +177,7 @@ output<-process_doc_folder(folder_path)
 View(output$summary)
 View(output$result)
 mean(output$summary$mean_syuzhet_sentiment)
+
+write_csv(output$result,"./sentiment_analysis.csv")
+write_csv(output$summary,"./sentiment_analysis_summary.csv")
 ```
